@@ -429,8 +429,7 @@ impl TouchControls {
                     // Reset to Default
                     if let Some(index) = e.selected_custom {
                         self.settings.custom_buttons[index].key = "key.keyboard.unknown".into();
-                    }
-                    if let Some(c) = e.selected {
+                    } else if let Some(c) = e.selected {
                         self.settings.key_overrides[c as usize] = None;
                     }
                     e.key_picker = false;
@@ -453,7 +452,9 @@ impl TouchControls {
                 } else {
                     match e.key_tab {
                         KeyPickerTab::Standard => {
-                            for (i, (token, _)) in super::custom::STANDARD_ACTIONS.iter().enumerate() {
+                            for (i, (token, _)) in
+                                super::custom::STANDARD_ACTIONS.iter().enumerate()
+                            {
                                 let col = i % 2;
                                 let row = i / 2;
                                 let rx = if col == 0 { 0.15 } else { 0.51 };
@@ -461,8 +462,7 @@ impl TouchControls {
                                 if layout::contains([rx, ry, 0.34, 0.10], p) {
                                     if let Some(index) = e.selected_custom {
                                         self.settings.custom_buttons[index].key = (*token).into();
-                                    }
-                                    if let Some(c) = e.selected {
+                                    } else if let Some(c) = e.selected {
                                         self.settings.key_overrides[c as usize] =
                                             Some((*token).into());
                                     }
@@ -480,9 +480,8 @@ impl TouchControls {
                             {
                                 if layout::contains(key_rect(i), p) {
                                     if let Some(index) = e.selected_custom {
-                                        self.settings.custom_buttons[index].key = token;
-                                    }
-                                    if let Some(c) = e.selected {
+                                        self.settings.custom_buttons[index].key = token.clone();
+                                    } else if let Some(c) = e.selected {
                                         self.settings.key_overrides[c as usize] = Some(token);
                                     }
                                     e.key_picker = false;
@@ -499,9 +498,8 @@ impl TouchControls {
                             {
                                 if layout::contains(key_rect(i), p) {
                                     if let Some(index) = e.selected_custom {
-                                        self.settings.custom_buttons[index].key = token;
-                                    }
-                                    if let Some(c) = e.selected {
+                                        self.settings.custom_buttons[index].key = token.clone();
+                                    } else if let Some(c) = e.selected {
                                         self.settings.key_overrides[c as usize] = Some(token);
                                     }
                                     e.key_picker = false;
