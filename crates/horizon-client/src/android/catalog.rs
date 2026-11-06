@@ -55,6 +55,8 @@ impl RendererMode {
 #[serde(default)]
 pub struct Config {
     pub profile: u32,
+    pub backend: crate::version_registry::Backend,
+    pub selected_version: String,
     pub proxy: Option<String>,
     pub name: String,
     pub server: String,
@@ -138,6 +140,9 @@ impl Config {
             .unwrap_or_default();
         config.device.migrate_missing(&value, &legacy);
         config.name = truncate_player_name(&config.name);
+        if config.selected_version.is_empty() {
+            config.selected_version = "26.3".into();
+        }
         config
     }
     pub fn save(&self, home: &Path) -> Result<(), String> {
@@ -157,9 +162,21 @@ impl Config {
                 .join(format!("profile-{}", self.profile))
         }
     }
+    pub fn instance_home(&self, home: &Path) -> PathBuf {
+        match self.backend {
+            crate::version_registry::Backend::HorizonRust => self.profile_home(home),
+            crate::version_registry::Backend::JavaFabric => {
+                let instance_name = if self.profile == 0 {
+                    format!("fabric-{}", self.selected_version)
+                } else {
+                    format!("fabric-{}-profile-{}", self.selected_version, self.profile)
+                };
+                home.join("instances").join(instance_name)
+            }
+        }
+    }
     pub fn game_home(&self, home: &Path) -> PathBuf {
-        // Legacy modpack selections are ignored; their files remain untouched.
-        self.profile_home(home)
+        self.instance_home(home)
     }
 }
 #[derive(Clone, Copy, PartialEq)]
