@@ -71,7 +71,8 @@ def export(root, output):
     if not required.issubset({e['path'] for e in entries}):
         raise ValueError('Missing source/license files')
     for template, destination in [('packaging/android/source-checks.yml', '.github/workflows/android-source.yml'),
-                                  ('packaging/android/dev-builds.yml', '.github/workflows/android-dev.yml')]:
+                                  ('packaging/android/dev-builds.yml', '.github/workflows/android-dev.yml'),
+                                  ('packaging/android/apk-builds.yml', '.github/workflows/android-apk.yml')]:
         workflow = root / template
         if workflow.is_file():
             data = workflow.read_bytes()

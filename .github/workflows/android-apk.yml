@@ -1,0 +1,246 @@
+name: Android APK Build
+run-name: Android APK · ${{ github.ref_name }} · ${{ github.sha }}
+
+on:
+  push:
+    branches:
+      - android
+      - fabric-runtime
+      - multi-version
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - android
+  workflow_dispatch:
+    inputs:
+      abi:
+        description: 'Target ABI (default: arm64-v8a)'
+        required: false
+        default: 'arm64-v8a'
+        type: choice
+        options:
+          - arm64-v8a
+          - x86_64
+      build_type:
+        description: 'Build Type (debug or release)'
+        required: false
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.local/ci-target
+      HORIZON_TELEMETRY_URL: 'off'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
+
+      - name: Determine ABI and build type
+        id: config
+        run: |
+          ABI="${{ inputs.abi }}"
+          if [ -z "$ABI" ]; then
+            ABI="arm64-v8a"
+          fi
+
+          BUILD_TYPE="${{ inputs.build_type }}"
+          if [ -z "$BUILD_TYPE" ]; then
+            if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+              BUILD_TYPE="release"
+            else
+              BUILD_TYPE="debug"
+            fi
+          fi
+
+          echo "abi=$ABI" >> "$GITHUB_OUTPUT"
+          echo "build_type=$BUILD_TYPE" >> "$GITHUB_OUTPUT"
+          echo "ABI=$ABI" >> "$GITHUB_ENV"
+          echo "BUILD_TYPE=$BUILD_TYPE" >> "$GITHUB_ENV"
+
+      - name: Setup Java 17 (for Android Gradle Plugin and build tools)
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Record Java 17 home
+        run: |
+          echo "JAVA_HOME_17=$JAVA_HOME" >> "$GITHUB_ENV"
+
+      - name: Setup Java 25 (for horizon-prepare / Mojang exporters)
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Setup Gradle 8.14
+        uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+        with:
+          gradle-version: '8.14'
+
+      - name: Install Android SDK & NDK toolchain
+        run: |
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [[ ! -x "$sdkmanager" ]]; then
+            sdkmanager=$(find "$ANDROID_HOME/cmdline-tools" -type f -path '*/bin/sdkmanager' | sort -V | tail -n 1)
+          fi
+          test -x "$sdkmanager"
+          "$sdkmanager" --sdk_root="$ANDROID_HOME" 'platforms;android-35' 'build-tools;35.0.0' 'ndk;28.2.13676358'
+
+      - name: Install Rust toolchain target
+        run: |
+          rustup show
+          case "$ABI" in
+            arm64-v8a) target=aarch64-linux-android ;;
+            x86_64) target=x86_64-linux-android ;;
+            armeabi-v7a) target=armv7-linux-androideabi ;;
+            x86) target=i686-linux-android ;;
+            *) echo "Unsupported ABI: $ABI" && exit 1 ;;
+          esac
+          rustup target add "$target"
+
+      - name: Restore Cargo cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .local/ci-target
+          key: android-apk-${{ runner.os }}-${{ env.ABI }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'packaging/android/build.gradle') }}-${{ github.sha }}
+          restore-keys: |
+            android-apk-${{ runner.os }}-${{ env.ABI }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'packaging/android/build.gradle') }}-
+
+      - name: Verify public tree and release boundaries
+        run: |
+          python3 tools/check_public_tree.py
+          python3 -m unittest discover -s tests -p 'test_android_release_audit.py'
+
+      - name: Prepare private engine inputs from official downloads
+        run: python3 tools/android_prepare.py --java-home "$JAVA_HOME"
+
+      - name: Build Android native library and package APK
+        run: |
+          BUILD_JAVA="${JAVA_HOME_17:-$JAVA_HOME}"
+          if [ "$BUILD_TYPE" = "release" ]; then
+            python3 tools/android_build.py --abi "$ABI" --public --profile release \
+              --sdk "$ANDROID_HOME" --java-home "$BUILD_JAVA" --gradle "$(command -v gradle)" \
+              --ndk-version 28.2.13676358 --build-tools-version 35.0.0 \
+              --dev-build "${GITHUB_RUN_NUMBER}.${GITHUB_SHA:0:12}" \
+              --dev-version-code "$((1000 + GITHUB_RUN_NUMBER))"
+          else
+            python3 tools/android_build.py --abi "$ABI" --profile fast \
+              --sdk "$ANDROID_HOME" --java-home "$BUILD_JAVA" --gradle "$(command -v gradle)" \
+              --ndk-version 28.2.13676358 --build-tools-version 35.0.0
+          fi
+
+      - name: Collect APK, checksum, and build metadata
+        env:
+          BUILD_TIMESTAMP: ${{ github.event.head_commit.timestamp || '' }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, shutil, sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          out = Path('dist')
+          out.mkdir(parents=True, exist_ok=True)
+
+          abi = os.environ.get('ABI', 'arm64-v8a')
+          build_type = os.environ.get('BUILD_TYPE', 'debug')
+          sha = os.environ.get('GITHUB_SHA', 'unknown')
+          ref = os.environ.get('GITHUB_REF_NAME', 'unknown')
+          timestamp = os.environ.get('BUILD_TIMESTAMP') or datetime.now(timezone.utc).isoformat()
+
+          src_dir = Path('.local/android/apk') / abi
+          if build_type == 'release':
+              src_apk = src_dir / 'horizon-android-public.apk'
+              apk_name = f'horizon-android-{abi}-release.apk'
+          else:
+              src_apk = src_dir / 'horizon-android.apk'
+              apk_name = f'horizon-android-{abi}-debug.apk'
+
+          if not src_apk.is_file():
+              print(f"Error: APK not found at {src_apk}", file=sys.stderr)
+              sys.exit(1)
+
+          size = src_apk.stat().st_size
+          if size == 0:
+              print(f"Error: APK file at {src_apk} is empty", file=sys.stderr)
+              sys.exit(1)
+
+          dest_apk = out / apk_name
+          shutil.copyfile(src_apk, dest_apk)
+
+          digest = hashlib.sha256(dest_apk.read_bytes()).hexdigest()
+          checksum_file = out / 'SHA256SUMS.txt'
+          checksum_file.write_text(f'{digest}  {apk_name}\n', encoding='utf-8')
+
+          for source, dest in [('LICENSE', 'LICENSE.txt'), ('THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_NOTICES.md')]:
+              if Path(source).is_file():
+                  shutil.copyfile(source, out / dest)
+
+          build_info = {
+              'commit': sha,
+              'branch_or_tag': ref,
+              'timestamp': timestamp,
+              'abi': abi,
+              'build_type': build_type,
+              'apk_file': apk_name,
+              'sha256': digest,
+              'size_bytes': size,
+              'run_id': os.environ.get('GITHUB_RUN_ID', ''),
+              'run_number': os.environ.get('GITHUB_RUN_NUMBER', '')
+          }
+          (out / 'BUILD.json').write_text(json.dumps(build_info, indent=2) + '\n', encoding='utf-8')
+
+          print(f"Successfully staged {apk_name} ({size} bytes, SHA-256: {digest})")
+
+          summary_path = os.environ.get('GITHUB_STEP_SUMMARY')
+          if summary_path:
+              with open(summary_path, 'a', encoding='utf-8') as summary:
+                  summary.write(f"### Horizon Android APK Build\n\n"
+                                f"- **Artifact**: `{apk_name}`\n"
+                                f"- **ABI**: `{abi}`\n"
+                                f"- **Type**: `{build_type}`\n"
+                                f"- **Commit**: `{sha}`\n"
+                                f"- **Size**: `{size}` bytes\n"
+                                f"- **SHA-256**: `{digest}`\n")
+          PY
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: horizon-android-${{ env.ABI }}-${{ env.BUILD_TYPE }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: horizon-android-${{ env.ABI }}-build-logs
+          path: |
+            .local/android/gradle-build/reports/
+            .local/android/native-symbols/
+            .local/android/apk/
+          if-no-files-found: ignore
+          retention-days: 7
