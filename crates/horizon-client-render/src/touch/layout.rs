@@ -167,6 +167,18 @@ pub struct Settings {
     pub vertical_margin: f32,
     #[serde(deserialize_with = "deserialize_layouts")]
     pub layouts: [[Placement; 14]; 3],
+    #[serde(default, deserialize_with = "deserialize_key_overrides")]
+    pub key_overrides: [Option<String>; 14],
+}
+fn deserialize_key_overrides<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<[Option<String>; 14], D::Error> {
+    let vec = Vec::<Option<String>>::deserialize(d)?;
+    let mut arr: [Option<String>; 14] = Default::default();
+    for (out, val) in arr.iter_mut().zip(vec) {
+        *out = val;
+    }
+    Ok(arr)
 }
 // Append new buttons without resetting a player's existing ten-button layout.
 fn deserialize_layouts<'de, D: serde::Deserializer<'de>>(
@@ -248,12 +260,18 @@ impl Default for Settings {
             horizontal_margin: 0.0,
             vertical_margin: 0.0,
             layouts,
+            key_overrides: Default::default(),
         }
     }
 }
 impl Settings {
     pub fn load() -> Self {
-        Self::load_from(std::path::Path::new("horizon-touch.json"))
+        let custom = std::path::Path::new("control_layouts/custom.json");
+        if custom.is_file() {
+            Self::load_from(custom)
+        } else {
+            Self::load_from(std::path::Path::new("horizon-touch.json"))
+        }
     }
     pub fn load_from(path: &std::path::Path) -> Self {
         let mut s: Self = std::fs::read(path)
@@ -362,11 +380,26 @@ impl Settings {
         for p in self.layouts.iter_mut().flatten() {
             p.sanitize();
         }
+        for ko in &mut self.key_overrides {
+            if let Some(token) = ko {
+                if !super::CustomButton::valid_token(token) {
+                    *ko = None;
+                }
+            }
+        }
     }
     pub fn save(&self) -> std::io::Result<()> {
+        let dir = std::path::Path::new("control_layouts");
+        let _ = std::fs::create_dir_all(dir);
+        let _ = self.save_to(&dir.join("custom.json"));
         self.save_to(std::path::Path::new("horizon-touch.json"))
     }
     pub fn save_to(&self, path: &std::path::Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+        }
         let temp = path.with_extension("json.tmp");
         std::fs::write(&temp, serde_json::to_vec_pretty(self)?)?;
         std::fs::rename(temp, path)
@@ -528,5 +561,21 @@ mod tests {
             [0.80, 0.96]
         );
         std::fs::remove_file(file).unwrap();
+    }
+
+    #[test]
+    fn custom_layouts_directory_save_and_load_roundtrip() {
+        let temp_dir = std::env::temp_dir().join(format!("horizon-ctl-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let custom_file = temp_dir.join("control_layouts/custom.json");
+        let mut settings = Settings::default();
+        settings.key_overrides[Control::Jump as usize] = Some("action:key.jump".into());
+        settings.key_overrides[Control::Attack as usize] = Some("action:key.attack".into());
+        settings.save_to(&custom_file).unwrap();
+        assert!(custom_file.is_file());
+        let loaded = Settings::load_from(&custom_file);
+        assert_eq!(loaded.key_overrides[Control::Jump as usize], Some("action:key.jump".into()));
+        assert_eq!(loaded.key_overrides[Control::Attack as usize], Some("action:key.attack".into()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

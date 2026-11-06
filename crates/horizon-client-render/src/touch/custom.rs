@@ -18,6 +18,12 @@ impl CustomButton {
             ); 3],
         }
     }
+    pub fn new_centered(key: String) -> Self {
+        Self {
+            key,
+            layouts: [Placement::new(0.5, 0.5, 0.105); 3],
+        }
+    }
     pub fn valid_token(token: &str) -> bool {
         token == "key.keyboard.unknown"
             || crate::keybinds::key_code(token).is_some()
@@ -26,15 +32,54 @@ impl CustomButton {
                 .is_some_and(|name| crate::keybinds::MAPPINGS.iter().any(|m| m.0 == name))
     }
     pub fn label(&self) -> String {
-        if self.key == "key.keyboard.unknown" {
+        Self::token_label(&self.key)
+    }
+    pub fn token_label(token: &str) -> String {
+        if token == "key.keyboard.unknown" {
             return "Button".into();
         }
-        if let Some(name) = self.key.strip_prefix("action:") {
-            return crate::text::Text::translate(name, &[]).plain();
+        if let Some(name) = token.strip_prefix("action:") {
+            match name {
+                "key.attack" => return "Attack".into(),
+                "key.use" => return "Use".into(),
+                "key.jump" => return "Jump".into(),
+                "key.sneak" => return "Sneak".into(),
+                "key.sprint" => return "Sprint".into(),
+                "key.drop" => return "Drop".into(),
+                "key.inventory" => return "Inv".into(),
+                "key.chat" => return "Chat".into(),
+                "key.playerlist" => return "Tab".into(),
+                "key.swapOffhand" => return "Offhand".into(),
+                "key.togglePerspective" => return "F5".into(),
+                "key.debug.overlay" => return "F3".into(),
+                _ => {}
+            }
+            let tr = crate::text::Text::translate(name, &[]).plain();
+            if !tr.is_empty() && tr != name {
+                return tr;
+            }
+            if let Some(short) = name.strip_prefix("key.") {
+                return short.to_string();
+            }
         }
-        crate::keybinds::display_name(&self.key).plain()
+        let disp = crate::keybinds::display_name(token).plain();
+        if !disp.is_empty() {
+            disp
+        } else {
+            "Key".into()
+        }
     }
 }
+pub const STANDARD_ACTIONS: &[(&str, &str)] = &[
+    ("action:key.jump", "Jump"),
+    ("action:key.sneak", "Sneak"),
+    ("action:key.sprint", "Sprint"),
+    ("action:key.inventory", "Inventory"),
+    ("action:key.chat", "Chat"),
+    ("action:key.drop", "Drop"),
+    ("action:key.attack", "Attack"),
+    ("action:key.use", "Use"),
+];
 pub(super) fn choices(raw_keys: bool) -> Vec<(String, String)> {
     if raw_keys {
         crate::keybinds::available_keys()
@@ -139,6 +184,22 @@ impl TouchControls {
             }
             self.clicked = true;
             return true;
+        }
+        if started && let Some(control) = self.control_at(point) {
+            if control != Control::Move && control != Control::Settings {
+                if let Some(token) = &self.settings.key_overrides[control as usize] {
+                    if token != "key.keyboard.unknown" {
+                        let pressed = !self.custom_fingers.values().any(|k| *k == token.as_str());
+                        self.custom_fingers.insert(id, token.clone());
+                        self.fingers.insert(id, (Role::Ignore, point));
+                        if pressed {
+                            self.custom_events.push((token.clone(), true));
+                        }
+                        self.clicked = true;
+                        return true;
+                    }
+                }
+            }
         }
         false
     }
@@ -277,5 +338,17 @@ mod tests {
         t.clear();
         assert_eq!(t.key_events(), [("key.keyboard.z".into(), false)]);
         assert_eq!(t.settings.custom_buttons[0].layouts[0].size, stored);
+    }
+    #[test]
+    fn centered_button_and_token_labels() {
+        let btn = CustomButton::new_centered("action:key.jump".into());
+        assert_eq!(btn.layouts[0].center, [0.5, 0.5]);
+        assert_eq!(btn.label(), "Jump");
+        assert_eq!(CustomButton::token_label("action:key.sneak"), "Sneak");
+        assert_eq!(CustomButton::token_label("action:key.inventory"), "Inv");
+        assert_eq!(CustomButton::token_label("action:key.attack"), "Attack");
+        assert_eq!(CustomButton::token_label("action:key.use"), "Use");
+        assert_eq!(CustomButton::token_label("action:key.drop"), "Drop");
+        assert_eq!(CustomButton::token_label("key.keyboard.unknown"), "Button");
     }
 }

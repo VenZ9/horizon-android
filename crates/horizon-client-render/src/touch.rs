@@ -469,6 +469,20 @@ impl TouchControls {
                         .fingers
                         .values()
                         .any(|(_, point)| layout::contains(p.rect(self.aspect()), *point));
+                if control != Control::Move && control != Control::Settings {
+                    if let Some(token) = &self.settings.key_overrides[control as usize] {
+                        text_button(
+                            b,
+                            a,
+                            [x, y, size, size],
+                            &CustomButton::token_label(token),
+                            pressed,
+                            color,
+                            true,
+                        );
+                        continue;
+                    }
+                }
                 let themed = match control {
                     Control::Chat => Some("chat"),
                     Control::Pause => Some("pause"),
@@ -596,6 +610,13 @@ impl TouchControls {
                 .fingers
                 .values()
                 .any(|(role, _)| matches!(role, Role::Shield))
+    }
+    pub fn control_label(&self, c: Control) -> String {
+        if let Some(token) = &self.settings.key_overrides[c as usize] {
+            CustomButton::token_label(token)
+        } else {
+            c.name().into()
+        }
     }
     pub fn pointer(&self) -> Option<[f32; 2]> {
         if self.crosshair() {
