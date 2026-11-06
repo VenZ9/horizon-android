@@ -266,7 +266,7 @@ impl VersionRegistry {
 
     /// Finds a mutable version entry by Minecraft version ID.
     pub fn get_mut(&mut self, version: &str) -> Option<&mut VersionEntry> {
-        self.versions.iter().mut_find(|v| v.minecraft_version == version)
+        self.versions.iter_mut().find(|v| v.minecraft_version == version)
     }
 
     /// Returns list of all versions that are currently playable on a specific backend.
@@ -318,26 +318,6 @@ impl VersionRegistry {
         std::fs::create_dir_all(&dir)?;
         let json = self.to_json().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         std::fs::write(dir.join("version-registry.json"), json)
-    }
-}
-
-trait MutFind<T> {
-    fn mut_find<P>(&mut self, predicate: P) -> Option<&mut T>
-    where
-        P: FnMut(&T) -> bool;
-}
-
-impl<T> MutFind<T> for [T] {
-    fn mut_find<P>(&mut self, mut predicate: P) -> Option<&mut T>
-    where
-        P: FnMut(&T) -> bool,
-    {
-        for elem in self.iter_mut() {
-            if predicate(elem) {
-                return Some(elem);
-            }
-        }
-        None
     }
 }
 
